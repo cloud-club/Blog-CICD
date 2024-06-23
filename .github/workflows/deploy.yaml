@@ -1,0 +1,80 @@
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        required: true
+        type: string
+      ecr_repository:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      - name: Get secret from AWS Secrets Manager
+        id: get-secrets
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,blog-cicd-secret
+          parse-json-secrets: true
+
+      - name: Debug secret
+        run: |
+          echo "ACTION_TOKEN: $ACTION_TOKEN"
+
+      - name: Checkout kustomize repository
+        uses: actions/checkout@v2
+        with:
+          repository: cloud-club/cicd
+          ref: main
+          token: ${{ env.ACTION_TOKEN }}
+          path: kustomize
+
+      - name: Update Kubernetes resources
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.ecr_repository }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          ls
+          cd kustomize/kustomize/backend/overlays/prod/
+          kustomize edit set image $ECR_REGISTRY/$ECR_REPOSITORY=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          cat kustomization.yaml
+
+      - name: Commit files
+        run: |
+          cd kustomize
+          git config --global user.email ${{ env.GIT_EMAIL }}
+          git config --global user.name ${{ env.GIT_USER }}
+          git commit -am "Update image tag"
+          git push -f -u origin main
